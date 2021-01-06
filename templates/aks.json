@@ -1,100 +1,312 @@
 {
-    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-    "contentVersion": "1.0.0.1",
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
     "parameters": {
-      "clusterName": {
-        "type": "string",
-        "defaultValue": "mkakscluster",
-        "metadata": {
-          "description": "The name of the Managed Cluster resource."
+        "resourceName": {
+            "type": "string",
+            "metadata": {
+                "description": "The name of the Managed Cluster resource."
+            }
+        },
+        "dnsPrefix": {
+            "type": "string",
+            "metadata": {
+                "description": "Optional DNS prefix to use with hosted Kubernetes API server FQDN."
+            }
+        },
+        "osDiskSizeGB": {
+            "type": "int",
+            "defaultValue": 0,
+            "metadata": {
+                "description": "Disk size (in GiB) to provision for each of the agent pool nodes. This value ranges from 0 to 1023. Specifying 0 will apply the default disk size for that agentVMSize."
+            },
+            "minValue": 0,
+            "maxValue": 1023
+        },
+        "contGuidValue": {
+            "type": "string",
+            "metadata": {
+                "description": "The unique id used in the role assignment of the kubernetes service to the container registry service. It is recommended to use the default value."
+            },
+            "defaultValue": "[newGuid()]"
+        },
+        "subGuidValue": {
+            "type": "string",
+            "metadata": {
+                "description": "The unique id used in the role assignment of the kubernetes service to the subnet. It is recommended to use the default value."
+            },
+            "defaultValue": "[newGuid()]"
+        },
+        "adminUsername": {
+            "type": "string"
+        },
+        "adminPublicKey": {
+            "type": "string"
         }
-      },
-      "dnsPrefix": {
-        "type": "string",
-        "metadata": {
-          "description": "Optional DNS prefix to use with hosted Kubernetes API server FQDN."
-        }
-      },
-      "osDiskSizeGB": {
-        "type": "int",
-        "defaultValue": 0,
-        "minValue": 0,
-        "maxValue": 1023,
-        "metadata": {
-          "description": "Disk size (in GB) to provision for each of the agent pool nodes. This value ranges from 0 to 1023. Specifying 0 will apply the default disk size for that agentVMSize."
-        }
-      },
-      "agentCount": {
-        "type": "int",
-        "defaultValue": 2,
-        "minValue": 1,
-        "maxValue": 50,
-        "metadata": {
-          "description": "The number of nodes for the cluster."
-        }
-      },
-      "agentVMSize": {
-        "type": "string",
-        "defaultValue": "Standard_DS2_v2",
-        "metadata": {
-          "description": "The size of the Virtual Machine."
-        }
-      },
-      "linuxAdminUsername": {
-        "type": "string",
-        "metadata": {
-          "description": "User name for the Linux Virtual Machines."
-        }
-      },
-      "sshRSAPublicKey": {
-        "type": "string",
-        "metadata": {
-          "description": "Configure all linux machines with the SSH RSA public key string. Your key should include three parts, for example 'ssh-rsa AAAAB...snip...UcyupgH azureuser@linuxvm'"
-        }
-      }
     },
     "variables": {
-        "location": "[resourceGroup().location]"
+        "location": "[resourceGroup().location]",
+        "kubernetesVersion": "1.18.10",
+        "networkPlugin": "azure",
+        "acrName": "[concat(parameters('resourceName'),'registry')]",
+        "vnetName": "[concat(parameters('resourceName'),'-vnet')]",
+        "dnsServiceIP": "10.3.0.10",
+        "virtualMachineName": "[concat(parameters('resourceName'), '-vm')]",
+        "publicIpAddressName": "[concat(variables('virtualMachineName'), '-pip')]",
+        "networkSecurityGroupName": "[concat(parameters('resourceName'), '-nsg')]",
+        "nsgId": "[resourceId(resourceGroup().name, 'Microsoft.Network/networkSecurityGroups', variables('networkSecurityGroupName'))]",
+        "networkInterfaceName": "[concat(variables('virtualMachineName'), '-nic')]"
     },
     "resources": [
-      {
-        "type": "Microsoft.ContainerService/managedClusters",
-        "apiVersion": "2020-03-01",
-        "name": "[parameters('clusterName')]",
-        "location": "[variables('location')]",
-        "properties": {
-          "dnsPrefix": "[parameters('dnsPrefix')]",
-          "agentPoolProfiles": [
-            {
-              "name": "agentpool",
-              "osDiskSizeGB": "[parameters('osDiskSizeGB')]",
-              "count": "[parameters('agentCount')]",
-              "vmSize": "[parameters('agentVMSize')]",
-              "osType": "Linux",
-              "storageProfile": "ManagedDisks"
-            }
-          ],
-          "linuxProfile": {
-            "adminUsername": "[parameters('linuxAdminUsername')]",
-            "ssh": {
-              "publicKeys": [
-                {
-                  "keyData": "[parameters('sshRSAPublicKey')]"
+        {
+            "apiVersion": "2019-09-01",
+            "name": "[variables('vnetName')]",
+            "type": "Microsoft.Network/virtualNetworks",
+            "location": "[variables('location')]",
+            "properties": {
+                "subnets": [
+                    {
+                        "name": "aks",
+                        "properties": {
+                            "addressPrefix": "10.0.0.0/16"
+                        }
+                    },
+                    {
+                        "name": "admin",
+                        "properties": {
+                            "addressPrefix": "10.1.0.0/16"
+                        }
+                    }
+                ],
+                "addressSpace": {
+                    "addressPrefixes": [
+                        "10.0.0.0/9"
+                    ]
                 }
-              ]
-            }
-          }
+            },
+            "tags": {}
         },
-        "identity": {
-            "type": "SystemAssigned"
+        {
+            "type": "Microsoft.ContainerRegistry/registries",
+            "apiVersion": "2019-05-01",
+            "name": "[variables('acrName')]",
+            "location": "[variables('location')]",
+            "sku": {
+                "name": "Basic"
+            },
+            "properties": {
+                "adminUserEnabled": false
+            }
+        },
+        {
+            "apiVersion": "2020-09-01",
+            "dependsOn": [
+                "[concat('Microsoft.Network/virtualNetworks/', variables('vnetName'))]"
+            ],
+            "type": "Microsoft.ContainerService/managedClusters",
+            "location": "[variables('location')]",
+            "name": "[parameters('resourceName')]",
+            "properties": {
+                "kubernetesVersion": "[variables('kubernetesVersion')]",
+                "enableRBAC": false,
+                "dnsPrefix": "[parameters('dnsPrefix')]",
+                "agentPoolProfiles": [
+                    {
+                        "name": "agentpool",
+                        "osDiskSizeGB": "[parameters('osDiskSizeGB')]",
+                        "count": 2,
+                        "vmSize": "Standard_DS2_v2",
+                        "osType": "Linux",
+                        "storageProfile": "ManagedDisks",
+                        "type": "VirtualMachineScaleSets",
+                        "mode": "System",
+                        "maxPods": 110,
+                        "availabilityZones": [
+                            "1"
+                        ],
+                        "vnetSubnetID": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), 'aks')]"
+                    }
+                ],
+                "networkProfile": {
+                    "loadBalancerSku": "standard",
+                    "networkPlugin": "[variables('networkPlugin')]",
+                    "serviceCidr": "10.3.0.0/16",
+                    "dnsServiceIP": "[variables('dnsServiceIP')]",
+                    "dockerBridgeCidr": "172.17.0.1/16"
+                },
+                "apiServerAccessProfile": {
+                    "enablePrivateCluster": true
+                },
+                "addonProfiles": {
+                    "httpApplicationRouting": {
+                        "enabled": true
+                    },
+                    "azurePolicy": {
+                        "enabled": false
+                    }
+                }
+            },
+            "identity": {
+                "type": "SystemAssigned"
+            }
+        },
+        {
+            "apiVersion": "2018-09-01-preview",
+            "type": "Microsoft.ContainerRegistry/registries/providers/roleAssignments",
+            "name": "[concat(variables('acrName'), '/Microsoft.Authorization/', parameters('contGuidValue'))]",
+            "dependsOn": [
+                "[concat('Microsoft.ContainerService/managedClusters/', parameters('resourceName'))]",
+                "[concat('Microsoft.ContainerRegistry/registries/', variables('acrName'))]"
+            ],
+            "properties": {
+                "principalId": "[reference(parameters('resourceName'), '2020-09-01').identityProfile.kubeletidentity.objectId]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Authorization/roleDefinitions/', 'b24988ac-6180-42a0-ab88-20f7382dd24c')]",
+                "scope": "[resourceId('Microsoft.ContainerRegistry/registries/', variables('acrName'))]"
+            }
+        },
+        {
+            "type": "Microsoft.Network/virtualNetworks/subnets/providers/roleAssignments",
+            "apiVersion": "2017-05-01",
+            "name": "[concat(variables('vnetName'), '/aks/Microsoft.Authorization/', parameters('subGuidValue'))]",
+            "dependsOn": [
+                "[concat('Microsoft.Network/virtualNetworks/', variables('vnetName'))]"
+            ],
+            "properties": {
+                "roleDefinitionId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Authorization/roleDefinitions/', '4d97b98b-1d4f-4787-a291-c67834d212e7')]",
+                "principalId": "[reference(parameters('resourceName')).identityProfile.kubeletidentity.objectId]",
+                "scope": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), 'aks')]"
+            }
+        },
+        {
+            "name": "[variables('publicIpAddressName')]",
+            "type": "Microsoft.Network/publicIpAddresses",
+            "apiVersion": "2019-02-01",
+            "location": "[variables('location')]",
+            "properties": {
+                "publicIpAllocationMethod": "Dynamic"
+            },
+            "sku": {
+                "name": "Basic"
+            }
+        },
+        {
+            "name": "[variables('networkSecurityGroupName')]",
+            "type": "Microsoft.Network/networkSecurityGroups",
+            "apiVersion": "2019-02-01",
+            "location": "[variables('location')]",
+            "properties": {
+                "securityRules": [
+                    {
+                        "name": "SSH",
+                        "properties": {
+                            "priority": 300,
+                            "protocol": "TCP",
+                            "access": "Allow",
+                            "direction": "Inbound",
+                            "sourceAddressPrefix": "*",
+                            "sourcePortRange": "*",
+                            "destinationAddressPrefix": "*",
+                            "destinationPortRange": "22"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "name": "[variables('networkInterfaceName')]",
+            "type": "Microsoft.Network/networkInterfaces",
+            "apiVersion": "2018-10-01",
+            "location": "[variables('location')]",
+            "dependsOn": [
+                "[concat('Microsoft.Network/virtualNetworks/', variables('vnetName'))]",
+                "[concat('Microsoft.Network/networkSecurityGroups/', variables('networkSecurityGroupName'))]",
+                "[concat('Microsoft.Network/publicIpAddresses/', variables('publicIpAddressName'))]"
+            ],
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig1",
+                        "properties": {
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), 'admin')]"
+                            },
+                            "privateIPAllocationMethod": "Dynamic",
+                            "publicIpAddress": {
+                                "id": "[resourceId(resourceGroup().name, 'Microsoft.Network/publicIpAddresses', variables('publicIpAddressName'))]"
+                            }
+                        }
+                    }
+                ],
+                "networkSecurityGroup": {
+                    "id": "[variables('nsgId')]"
+                }
+            }
+        },
+
+        {
+            "name": "[variables('virtualMachineName')]",
+            "type": "Microsoft.Compute/virtualMachines",
+            "apiVersion": "2020-06-01",
+            "location": "[variables('location')]",
+            "dependsOn": [
+                "[concat('Microsoft.Network/networkInterfaces/', variables('networkInterfaceName'))]"
+            ],
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "Standard_A1"
+                },
+                "storageProfile": {
+                    "osDisk": {
+                        "createOption": "fromImage",
+                        "managedDisk": {
+                            "storageAccountType": "StandardSSD_LRS"
+                        }
+                    },
+                    "imageReference": {
+                        "publisher": "Canonical",
+                        "offer": "UbuntuServer",
+                        "sku": "18.04-LTS",
+                        "version": "latest"
+                    }
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('networkInterfaceName'))]"
+                        }
+                    ]
+                },
+                "osProfile": {
+                    "computerName": "[variables('virtualMachineName')]",
+                    "adminUsername": "[parameters('adminUsername')]",
+                    "linuxConfiguration": {
+                        "disablePasswordAuthentication": true,
+                        "ssh": {
+                            "publicKeys": [
+                                {
+                                    "path": "[concat('/home/', parameters('adminUsername'), '/.ssh/authorized_keys')]",
+                                    "keyData": "[parameters('adminPublicKey')]"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
         }
-      }
     ],
     "outputs": {
-      "controlPlaneFQDN": {
-        "type": "string",
-        "value": "[reference(parameters('clusterName')).fqdn]"
-      }
+        "controlPlaneFQDN": {
+            "type": "string",
+            "value": "[reference(concat('Microsoft.ContainerService/managedClusters/', parameters('resourceName'))).privateFQDN]"
+        },
+        "adminUsername": {
+            "type": "string",
+            "value": "[parameters('adminUsername')]"
+        },
+        "AdminPublicIp": {
+            "type": "string",
+            "value": "[reference(resourceId('Microsoft.Network/publicIPAddresses',variables('publicIPAddressName'))).IpAddress]"
+        }
     }
-  }
-  
+}
