@@ -1,0 +1,22 @@
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- script: echo Hello, world!
+  displayName: 'Run a one-line script'
+
+- task: AzureResourceManagerTemplateDeployment@3
+  inputs:
+    deploymentScope: 'Resource Group'
+    azureResourceManagerConnection: 'aks'
+    subscriptionId: '381bf1d4-f91c-426f-98ea-ab008cafbd7c'
+    action: 'Create Or Update Resource Group'
+    resourceGroupName: 'mkaks'
+    location: 'West Europe'
+    templateLocation: 'Linked artifact'
+    csmFile: '\templates\aks.json'
+    overrideParameters: '-clusterName mkakscluster -dnsPrefix mk -linuxAdminUsername linadmin -sshRSAPublicKey $(sshkey)'
+    deploymentMode: 'Incremental'
